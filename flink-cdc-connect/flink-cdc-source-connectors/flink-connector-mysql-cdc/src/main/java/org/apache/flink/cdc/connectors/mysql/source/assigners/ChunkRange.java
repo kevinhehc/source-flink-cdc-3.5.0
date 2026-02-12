@@ -24,22 +24,22 @@ import java.util.Objects;
 import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
- * An internal structure describes a chunk range with a chunk start (inclusive) and chunk end
- * (exclusive). Note that {@code null} represents unbounded chunk start/end.
+ * 描述 chunk 区间的内部结构：chunkStart（含）到 chunkEnd（不含）。
+ *
+ * <p>其中 {@code null} 表示无界起点/终点。
  */
 class ChunkRange {
     private final @Nullable Object chunkStart;
     private final @Nullable Object chunkEnd;
 
     /**
-     * Returns a {@link ChunkRange} which represents a full table scan with unbounded chunk start
-     * and chunk end.
+     * 返回表示“全表扫描”的 {@link ChunkRange}（起止边界都无界）。
      */
     public static ChunkRange all() {
         return new ChunkRange(null, null);
     }
 
-    /** Returns a {@link ChunkRange} with the given chunk start and chunk end. */
+    /** 使用给定起止边界创建 {@link ChunkRange}。 */
     public static ChunkRange of(Object chunkStart, Object chunkEnd) {
         return new ChunkRange(chunkStart, chunkEnd);
     }

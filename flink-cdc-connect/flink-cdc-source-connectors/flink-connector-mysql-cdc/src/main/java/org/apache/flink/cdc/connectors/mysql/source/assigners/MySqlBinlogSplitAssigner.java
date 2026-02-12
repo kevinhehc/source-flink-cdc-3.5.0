@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /** A {@link MySqlSplitAssigner} which only read binlog from current binlog position. */
+// 只读 binlog（增量）
 public class MySqlBinlogSplitAssigner implements MySqlSplitAssigner {
 
     public static final String BINLOG_SPLIT_ID = "binlog-split";

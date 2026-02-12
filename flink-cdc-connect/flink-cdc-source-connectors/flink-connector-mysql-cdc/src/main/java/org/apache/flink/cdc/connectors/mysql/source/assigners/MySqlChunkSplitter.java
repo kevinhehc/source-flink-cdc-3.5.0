@@ -64,10 +64,12 @@ public class MySqlChunkSplitter implements ChunkSplitter {
     private final MySqlSourceConfig sourceConfig;
     private final MySqlSchema mySqlSchema;
 
+    // 单表非均匀切分时需要持久化的进度状态。
     @Nullable private TableId currentSplittingTableId;
     @Nullable private ChunkSplitterState.ChunkBound nextChunkStart;
     @Nullable private Integer nextChunkId;
 
+    // 表分析后的缓存信息，在生成 chunk 前由 analyzeTable(...) 初始化。
     private JdbcConnection jdbcConnection;
     private Table currentSplittingTable;
     private Column splitColumn;
@@ -112,13 +114,16 @@ public class MySqlChunkSplitter implements ChunkSplitter {
     @Override
     public List<MySqlSnapshotSplit> splitChunks(MySqlPartition partition, TableId tableId)
             throws Exception {
+        // 当前没有进行中的表，说明这是一次新的切分流程，先做表分析。
         if (!hasNextChunk()) {
             analyzeTable(partition, tableId);
             Optional<List<MySqlSnapshotSplit>> evenlySplitChunks =
                     trySplitAllEvenlySizedChunks(partition, tableId);
             if (evenlySplitChunks.isPresent()) {
+                // 命中均匀切分优化时，可以一次性产出该表所有 chunk。
                 return evenlySplitChunks.get();
             } else {
+                // 否则回退到有状态的非均匀切分：每次调用只生成一个 chunk。
                 synchronized (lock) {
                     this.currentSplittingTableId = tableId;
                     this.nextChunkStart = ChunkSplitterState.ChunkBound.START_BOUND;
@@ -128,6 +133,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
                 }
             }
         } else {
+            // 从 checkpoint 恢复后，继续切分上一轮未完成的同一张表。
             Preconditions.checkState(
                     currentSplittingTableId.equals(tableId),
                     "Can not split a new table before the previous table splitting finish.");
@@ -143,6 +149,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
     /** Analyze the meta information for given table. */
     private void analyzeTable(MySqlPartition partition, TableId tableId) {
         try {
+            // 一次性解析 schema 和切分列，后续生成 chunk 时复用。
             currentSplittingTable =
                     mySqlSchema.getTableSchema(partition, jdbcConnection, tableId).getTable();
             splitColumn =
@@ -171,7 +178,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
                 nextChunkStart == ChunkSplitterState.ChunkBound.START_BOUND
                         ? "null"
                         : chunkStartVal.toString());
-        // we start from [null, min + chunk_size) and avoid [null, min)
+        // 首个 chunk 从 min 开始计算，避免生成 [null, min) 这样的空区间。
         Object chunkEnd =
                 nextChunkEnd(
                         jdbcConnection,
@@ -185,6 +192,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
         // may sleep a while to avoid DDOS on MySQL server
         maySleep(nextChunkId, tableId);
         if (chunkEnd != null && ObjectUtils.compare(chunkEnd, minMaxOfSplitColumn[1]) <= 0) {
+            // 当前区间后仍有数据：记录下一次起点，后续继续切分。
             nextChunkStart = ChunkSplitterState.ChunkBound.middleOf(chunkEnd);
             return createSnapshotSplit(
                     jdbcConnection,
@@ -195,6 +203,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
                     chunkStartVal,
                     chunkEnd);
         } else {
+            // 找不到下一个边界，说明这是该表最后一个 chunk。
             currentSplittingTableId = null;
             nextChunkStart = ChunkSplitterState.ChunkBound.END_BOUND;
             return createSnapshotSplit(
@@ -232,6 +241,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
                 getDynamicChunkSize(tableId, splitColumn, min, max, chunkSize, approximateRowCnt);
         if (dynamicChunkSize != -1) {
             LOG.debug("finish evenly splitting table {} into chunks", tableId);
+            // 数据分布较均匀时，可基于 min/max 和步长直接计算边界。
             List<ChunkRange> chunks =
                     splitEvenlySizedChunks(
                             tableId, min, max, approximateRowCnt, chunkSize, dynamicChunkSize);
@@ -330,7 +340,8 @@ public class MySqlChunkSplitter implements ChunkSplitter {
             Object max,
             int chunkSize)
             throws SQLException {
-        // chunk end might be null when max values are removed
+        // 通过类似 "ORDER BY splitKey LIMIT chunkSize" 的查询计算上界。
+        // 若两次查询间最大值对应的数据被删除，chunkEnd 可能为 null。
         Object chunkEnd =
                 StatementUtils.queryNextChunkMax(
                         jdbc, tableId, splitColumnName, chunkSize, previousChunkEnd);
@@ -406,7 +417,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
                 distributionFactorLower,
                 distributionFactorUpper);
         if (dataIsEvenlyDistributed) {
-            // the minimum dynamic chunk size is at least 1
+            // 最小步长至少为 1，避免在稀疏数据上出现步长为 0 的死循环。
             return Math.max((int) (distributionFactor * chunkSize), 1);
         }
         return -1;
@@ -439,6 +450,7 @@ public class MySqlChunkSplitter implements ChunkSplitter {
         }
         BigDecimal difference = ObjectUtils.minus(max, min);
         // factor = (max - min + 1) / rowCount
+        // 越接近 1 表示键值空间与行数越匹配，分布越均匀。
         final BigDecimal subRowCnt = difference.add(BigDecimal.valueOf(1));
         double distributionFactor =
                 subRowCnt.divide(new BigDecimal(approximateRowCnt), 4, ROUND_CEILING).doubleValue();

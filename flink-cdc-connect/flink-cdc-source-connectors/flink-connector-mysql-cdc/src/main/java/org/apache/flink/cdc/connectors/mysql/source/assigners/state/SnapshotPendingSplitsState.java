@@ -31,45 +31,44 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** A {@link PendingSplitsState} for pending snapshot splits. */
+/** snapshot 阶段待分配 split 的 {@link PendingSplitsState}。 */
 public class SnapshotPendingSplitsState extends PendingSplitsState {
 
-    /** The tables in the checkpoint. */
+    /** checkpoint 中尚未处理完成的表。 */
     private final List<TableId> remainingTables;
 
     /**
-     * The paths that are no longer in the enumerator checkpoint, but have been processed before and
-     * should this be ignored. Relevant only for sources in continuous monitoring mode.
+     * 不再出现在 enumerator checkpoint 中、但历史上已经处理过的表。
+     *
+     * <p>这类表在后续恢复时应被忽略，仅对持续监控模式生效。
      */
     private final List<TableId> alreadyProcessedTables;
 
-    /** The splits in the checkpoint. */
+    /** checkpoint 中尚未分配/处理完成的 snapshot splits。 */
     private final List<MySqlSchemalessSnapshotSplit> remainingSplits;
 
     /**
-     * The snapshot splits that the {@link MySqlSourceEnumerator} has assigned to {@link
-     * MySqlSplitReader}s.
+     * 已由 {@link MySqlSourceEnumerator} 分配给 {@link MySqlSplitReader} 的 snapshot splits。
      */
     private final Map<String, MySqlSchemalessSnapshotSplit> assignedSplits;
 
     /**
-     * The offsets of finished (snapshot) splits that the {@link MySqlSourceEnumerator} has received
-     * from {@link MySqlSplitReader}s.
+     * {@link MySqlSourceEnumerator} 从 {@link MySqlSplitReader} 收到的已完成 split 对应 offset。
      */
     private final Map<String, BinlogOffset> splitFinishedOffsets;
 
-    /** The {@link AssignerStatus} that indicates the snapshot assigner status. */
+    /** 表示 snapshot assigner 当前阶段的 {@link AssignerStatus}。 */
     private final AssignerStatus assignerStatus;
 
-    /** Whether the table identifier is case-sensitive. */
+    /** 表标识符是否大小写敏感。 */
     private final boolean isTableIdCaseSensitive;
 
-    /** Whether the remaining tables are keep when snapshot state. */
+    /** 做 snapshot 状态快照时是否保留 remainingTables。 */
     private final boolean isRemainingTablesCheckpointed;
 
     private final Map<TableId, TableChange> tableSchemas;
 
-    /** The data structure to record the state of a {@link ChunkSplitter}. */
+    /** 记录 {@link ChunkSplitter} 进度的状态结构。 */
     private final ChunkSplitterState chunkSplitterState;
 
     public SnapshotPendingSplitsState(

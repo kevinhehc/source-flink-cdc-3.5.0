@@ -35,7 +35,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
-/** The split to describe the binlog of MySql table(s). */
+/** 描述 MySQL 表（单表或多表）binlog 范围的 split。 */
 public class MySqlBinlogSplit extends MySqlSplit {
     private static final Logger LOG = LoggerFactory.getLogger(MySqlBinlogSplit.class);
     private static final int TABLES_LENGTH_FOR_LOG = 3;
@@ -117,7 +117,7 @@ public class MySqlBinlogSplit extends MySqlSplit {
         List<TableId> tablesForLog = new ArrayList<>();
         if (tableSchemas != null) {
             List<TableId> tableIds = new ArrayList<>(new TreeSet(tableSchemas.keySet()));
-            // Truncate tables length to avoid printing too much log
+            // 截断表名数量，避免日志过长。
             tablesForLog = tableIds.subList(0, Math.min(tableIds.size(), TABLES_LENGTH_FOR_LOG));
         }
         return tablesForLog.toString();
@@ -177,11 +177,11 @@ public class MySqlBinlogSplit extends MySqlSplit {
     }
 
     // -------------------------------------------------------------------
-    // factory utils to build new MySqlBinlogSplit instance
+    // 构建新 MySqlBinlogSplit 实例的工厂方法
     // -------------------------------------------------------------------
     public static MySqlBinlogSplit appendFinishedSplitInfos(
             MySqlBinlogSplit binlogSplit, List<FinishedSnapshotSplitInfo> splitInfos) {
-        // re-calculate the starting binlog offset after the new table added
+        // 新增表后，重新计算起始 binlog offset（取更早的 high watermark）。
         BinlogOffset startingOffset = binlogSplit.getStartingOffset();
         for (FinishedSnapshotSplitInfo splitInfo : splitInfos) {
             if (splitInfo.getHighWatermark().isBefore(startingOffset)) {
@@ -200,11 +200,10 @@ public class MySqlBinlogSplit extends MySqlSplit {
     }
 
     /**
-     * Filter out the outdated finished splits in {@link MySqlBinlogSplit}.
+     * 过滤 {@link MySqlBinlogSplit} 中过期的 finished split 信息。
      *
-     * <p>When restore from a checkpoint, the finished split infos may contain some splits from the
-     * deleted tables. We need to remove these splits from the total finished split infos and update
-     * the size, while also removing the outdated tables from the table schemas of binlog split.
+     * <p>从 checkpoint 恢复时，finished split 列表可能包含已删除表的 split。这里会将这些 split 从
+     * finished 列表中移除并更新数量，同时从 binlog split 的 tableSchemas 中移除对应表。
      */
     public static MySqlBinlogSplit filterOutdatedSplitInfos(
             MySqlBinlogSplit binlogSplit, Tables.TableFilter currentTableFilter) {
@@ -290,21 +289,19 @@ public class MySqlBinlogSplit extends MySqlSplit {
     }
 
     /**
-     * Forwards {@link FinishedSnapshotSplitInfo#getHighWatermark()} to current binlog reading
-     * offset for these snapshot-splits have started the binlog reading, this is pretty useful for
-     * newly added table process that we can continue to consume binlog for these splits from the
-     * updated high watermark.
+     * 将已开始读取 binlog 的 snapshot split 的 high watermark 前推到当前 binlog 读取位点。
      *
-     * @param existedSplitInfos
-     * @param currentBinlogReadingOffset
+     * <p>这对“新增表”场景很关键：可以让这些 split 从更新后的 high watermark 继续消费，避免重复回读。
+     *
+     * @param existedSplitInfos 现有 finished snapshot split 信息
+     * @param currentBinlogReadingOffset 当前 binlog 读取位点
      */
     private static List<FinishedSnapshotSplitInfo> forwardHighWatermarkToStartingOffset(
             List<FinishedSnapshotSplitInfo> existedSplitInfos,
             BinlogOffset currentBinlogReadingOffset) {
         List<FinishedSnapshotSplitInfo> updatedSnapshotSplitInfos = new ArrayList<>();
         for (FinishedSnapshotSplitInfo existedSplitInfo : existedSplitInfos) {
-            // for split has started read binlog, forward its high watermark to current binlog
-            // reading offset
+            // 对已开始读取 binlog 的 split，将其 high watermark 前推到当前读取位点。
             if (existedSplitInfo.getHighWatermark().isBefore(currentBinlogReadingOffset)) {
                 FinishedSnapshotSplitInfo forwardHighWatermarkSnapshotSplitInfo =
                         new FinishedSnapshotSplitInfo(

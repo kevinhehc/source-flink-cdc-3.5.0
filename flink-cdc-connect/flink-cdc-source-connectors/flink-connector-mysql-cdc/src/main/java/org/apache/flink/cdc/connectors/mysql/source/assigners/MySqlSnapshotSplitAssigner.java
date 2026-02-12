@@ -68,6 +68,7 @@ import java.util.stream.Collectors;
  *
  * @see MySqlSourceOptions#SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE
  */
+// 只做 snapshot 分片（全量 chunk）
 public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
     private static final Logger LOG = LoggerFactory.getLogger(MySqlSnapshotSplitAssigner.class);
 

@@ -31,7 +31,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-/** The split to describe a split of a MySql table snapshot. */
+/** 描述 MySQL 表快照阶段单个分片（chunk）的 split。 */
 public class MySqlSnapshotSplit extends MySqlSplit {
 
     private final TableId tableId;
@@ -40,13 +40,13 @@ public class MySqlSnapshotSplit extends MySqlSplit {
 
     @Nullable private final Object[] splitStart;
     @Nullable private final Object[] splitEnd;
-    /** The high watermark is not null when the split read finished. */
+    /** split 读取完成后 high watermark 才会非空。 */
     @Nullable private final BinlogOffset highWatermark;
 
     @Nullable transient byte[] serializedFormCache;
 
     /**
-     * Create a SnapshotSplit with generating splitId with the given tableId and chunkId.
+     * 使用给定 tableId 和 chunkId 生成 splitId，并创建 SnapshotSplit。
      *
      * @see #generateSplitId(TableId, int)
      */
@@ -68,10 +68,10 @@ public class MySqlSnapshotSplit extends MySqlSplit {
     }
 
     /**
-     * This constructor should not be used directly. Please use the other constructor. If this
-     * constructor must be invoked, please use the same format for the splitId as {@link
-     * #generateSplitId(TableId, int)}. Or else the parsing method will fail. See more in {@link
-     * #extractTableId(String)} and {@link #extractChunkId(String)}.
+     * 不建议直接使用此构造方法，请优先使用另一个构造方法。
+     *
+     * <p>若必须调用，请确保 splitId 格式与 {@link #generateSplitId(TableId, int)} 保持一致，
+     * 否则后续解析会失败。参考 {@link #extractTableId(String)} 与 {@link #extractChunkId(String)}。
      */
     @Internal
     public MySqlSnapshotSplit(
@@ -119,7 +119,7 @@ public class MySqlSnapshotSplit extends MySqlSplit {
         return tableSchemas;
     }
 
-    /** Casts this split into a {@link MySqlSchemalessSnapshotSplit}. */
+    /** 将当前 split 转换为不携带 schema 的 {@link MySqlSchemalessSnapshotSplit}。 */
     public final MySqlSchemalessSnapshotSplit toSchemalessSnapshotSplit() {
         return new MySqlSchemalessSnapshotSplit(
                 tableId, splitId, splitKeyType, splitStart, splitEnd, highWatermark);

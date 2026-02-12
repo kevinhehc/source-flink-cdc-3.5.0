@@ -23,8 +23,9 @@ import org.slf4j.LoggerFactory;
 import static java.lang.String.format;
 
 /**
- * The state of split assigner finite state machine, tips: we use word status instead of word state
- * to avoid conflict with Flink state keyword. The assigner finite state machine goes this way.
+ * split assigner 的有限状态机状态。
+ *
+ * <p>这里使用 status 而不是 state，避免与 Flink 的 state 概念混淆。状态流转如下：
  *
  * <pre>
  *        INITIAL_ASSIGNING(start)
@@ -147,10 +148,10 @@ public enum AssignerStatus {
     }
 
     // --------------------------------------------------------------------------------------------
-    // Utilities
+    // 工具方法
     // --------------------------------------------------------------------------------------------
 
-    /** Gets the {@link AssignerStatus} from status code. */
+    /** 根据状态码获取 {@link AssignerStatus}。 */
     public static AssignerStatus fromStatusCode(int statusCode) {
         switch (statusCode) {
             case 0:
@@ -172,9 +173,9 @@ public enum AssignerStatus {
     }
 
     /**
-     * Returns whether the split assigner has assigned all snapshot splits, which indicates there is
-     * no more snapshot splits and all records of splits have been completely processed in the
-     * pipeline.
+     * 判断是否已完成 snapshot split 的分配。
+     *
+     * <p>返回 true 表示当前不再有待分配 snapshot split，且相关 split 记录已在流水线中处理完成。
      */
     public static boolean isSnapshotAssigningFinished(AssignerStatus assignerStatus) {
         return assignerStatus == INITIAL_ASSIGNING_FINISHED
@@ -182,31 +183,32 @@ public enum AssignerStatus {
     }
 
     /**
-     * Returns whether the split assigner has assigned all splits, which indicates it can assign
-     * splits for newly added tables or not.
+     * 判断是否已完成当前轮次所有 split 分配。
+     *
+     * <p>返回 true 时，表示可以进入/继续新增表分配流程。
      */
     public static boolean isAssigningFinished(AssignerStatus assignerStatus) {
         return assignerStatus == INITIAL_ASSIGNING_FINISHED
                 || assignerStatus == NEWLY_ADDED_ASSIGNING_FINISHED;
     }
 
-    /** Returns whether the split assigner is assigning snapshot splits. */
+    /** 判断当前是否处于 snapshot split 分配中。 */
     public static boolean isAssigningSnapshotSplits(AssignerStatus assignerStatus) {
         return assignerStatus == INITIAL_ASSIGNING || assignerStatus == NEWLY_ADDED_ASSIGNING;
     }
 
-    /** Returns whether the split assigner has finished its initial tables assignment. */
+    /** 判断是否已完成初始表分配。 */
     public static boolean isInitialAssigningFinished(AssignerStatus assignerStatus) {
         return assignerStatus == INITIAL_ASSIGNING_FINISHED;
     }
 
-    /** Returns whether the split assigner has finished its newly added tables assignment. */
+    /** 判断是否已完成新增表分配。 */
     public static boolean isNewlyAddedAssigningFinished(AssignerStatus assignerStatus) {
         return assignerStatus == NEWLY_ADDED_ASSIGNING_FINISHED;
     }
 
     /**
-     * Returns whether the split assigner has finished its newly added snapshot splits assignment.
+     * 判断是否已完成“新增表的 snapshot split”分配阶段。
      */
     public static boolean isNewlyAddedAssigningSnapshotFinished(AssignerStatus assignerStatus) {
         return assignerStatus == NEWLY_ADDED_ASSIGNING_SNAPSHOT_FINISHED;

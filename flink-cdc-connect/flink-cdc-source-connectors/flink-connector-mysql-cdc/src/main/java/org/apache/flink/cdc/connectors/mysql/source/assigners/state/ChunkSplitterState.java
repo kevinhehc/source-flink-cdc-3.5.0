@@ -25,19 +25,19 @@ import javax.annotation.Nullable;
 
 import java.util.Objects;
 
-/** The state of the {@link MySqlChunkSplitter}. */
+/** {@link MySqlChunkSplitter} 的运行状态。 */
 public class ChunkSplitterState {
 
     public static final ChunkSplitterState NO_SPLITTING_TABLE_STATE =
             new ChunkSplitterState(null, null, null);
 
-    /** Record current splitting table id in the chunk splitter. */
+    /** 当前正在切分的表 ID。 */
     @Nullable private final TableId currentSplittingTableId;
 
-    /** Record next chunk start. */
+    /** 下一次切分的起始边界。 */
     @Nullable private final ChunkBound nextChunkStart;
 
-    /** Record next chunk id. */
+    /** 下一次切分的 chunk 编号。 */
     @Nullable private final Integer nextChunkId;
 
     public ChunkSplitterState(
@@ -95,7 +95,7 @@ public class ChunkSplitterState {
                 + '}';
     }
 
-    /** The definition of the chunk bound. */
+    /** chunk 边界定义。 */
     public static final class ChunkBound {
 
         public static final ChunkBound START_BOUND = new ChunkBound(ChunkBoundType.START, null);
@@ -150,7 +150,7 @@ public class ChunkSplitterState {
         }
     }
 
-    /** The type of the chunk bound. */
+    /** chunk 边界类型。 */
     public enum ChunkBoundType {
         START,
         MIDDLE,

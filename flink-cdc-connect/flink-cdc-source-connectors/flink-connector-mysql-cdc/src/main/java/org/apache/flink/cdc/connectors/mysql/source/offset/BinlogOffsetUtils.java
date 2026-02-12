@@ -23,26 +23,23 @@ import org.apache.flink.cdc.connectors.mysql.source.config.MySqlSourceConfig;
 
 import io.debezium.connector.mysql.MySqlConnection;
 
-/** Utils for handling {@link BinlogOffset}. */
+/** {@link BinlogOffset} 处理工具类。 */
 public class BinlogOffsetUtils {
 
     /**
-     * Initialize the binlog offset according to the kind of binlog offset, so that the debezium
-     * reader could interpret it and seek the reader to the offset.
+     * 根据位点类型初始化“生效位点”，让 Debezium reader 能够正确解析并 seek 到目标位置。
      *
-     * <p>This method will be used in binlog reading phase, when the {@link StatefulTaskContext} is
-     * being initialized to load the actual effective binlog offset.
+     * <p>该方法用于 binlog 读取阶段，在初始化 {@link StatefulTaskContext} 时计算真实可用的读取位点。
      *
-     * <p>The binlog offset kind will be overridden to {@link BinlogOffsetKind#SPECIFIC} after the
-     * initialization, as the initialized effective offset describes a specific position in binlog.
+     * <p>初始化完成后，位点语义会落到可执行的“具体位点”（SPECIFIC），因为最终都需要转换为可定位的
+     * binlog 精确位置。
      *
-     * <p>Initialization strategy:
+     * <p>初始化策略：
      *
      * <ul>
-     *   <li>EARLIEST: binlog filename = "", position = 0
-     *   <li>TIMESTAMP: set to earliest, as the current implementation is reading from the earliest
-     *       offset and drop events earlier than the specified timestamp.
-     *   <li>LATEST: fetch the current binlog by JDBC
+     *   <li>EARLIEST：file="", position=0
+     *   <li>TIMESTAMP：通过时间戳查找对应位点（毫秒），从该时刻附近开始消费
+     *   <li>LATEST：通过 JDBC 拉取当前最新位点
      * </ul>
      */
     public static BinlogOffset initializeEffectiveOffset(
@@ -61,6 +58,7 @@ public class BinlogOffsetUtils {
         }
     }
 
+    /** 判断给定位点是否为“持续读取、不设结束位点”的内部语义。 */
     public static boolean isNonStoppingOffset(BinlogOffset binlogOffset) {
         return BinlogOffsetKind.NON_STOPPING.equals(binlogOffset.getOffsetKind());
     }

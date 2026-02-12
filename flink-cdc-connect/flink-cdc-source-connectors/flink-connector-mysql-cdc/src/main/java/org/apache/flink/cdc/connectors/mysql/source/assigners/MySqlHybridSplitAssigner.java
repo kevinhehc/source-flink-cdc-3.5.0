@@ -41,19 +41,25 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
- * A {@link MySqlSplitAssigner} that splits tables into small chunk splits based on primary key
- * range and chunk size and also continue with a binlog split.
+ * MySQL 混合分片分配器。
+ *
+ * <p>先按主键范围把表切成多个 snapshot split 分配出去；当所有 snapshot split 都完成后，再分配一个
+ * binlog split 持续消费增量日志。
  */
+// 先做 snapshot 分片，再“继续”进入 binlog split（全量 + 增量一体）。
 public class MySqlHybridSplitAssigner implements MySqlSplitAssigner {
 
     private static final Logger LOG = LoggerFactory.getLogger(MySqlHybridSplitAssigner.class);
     private static final String BINLOG_SPLIT_ID = "binlog-split";
 
+    /** binlog split 中可直接携带的 finished-split 元信息分组阈值。 */
     private final int splitMetaGroupSize;
     private final MySqlSourceConfig sourceConfig;
 
+    /** 当前是否已经分配过 binlog split。 */
     private boolean isBinlogSplitAssigned;
 
+    /** 实际负责 snapshot split 生命周期管理的分配器。 */
     private final MySqlSnapshotSplitAssigner snapshotSplitAssigner;
 
     public MySqlHybridSplitAssigner(
@@ -108,33 +114,32 @@ public class MySqlHybridSplitAssigner implements MySqlSplitAssigner {
 
     @Override
     public Optional<MySqlSplit> getNext() {
+        // 新增表正在做 snapshot 分配时，先不下发 split，避免流程交叉。
         if (AssignerStatus.isNewlyAddedAssigningSnapshotFinished(getAssignerStatus())) {
-            // do not assign split until the adding table process finished
             return Optional.empty();
         }
         if (snapshotSplitAssigner.noMoreSplits()) {
-            // binlog split assigning
+            // snapshot split 已经分配完，进入 binlog split 分配阶段。
             if (isBinlogSplitAssigned) {
-                // no more splits for the assigner
+                // binlog split 已分配过，不再有新 split。
                 return Optional.empty();
             } else if (AssignerStatus.isInitialAssigningFinished(
                     snapshotSplitAssigner.getAssignerStatus())) {
-                // we need to wait snapshot-assigner to be finished before
-                // assigning the binlog split. Otherwise, records emitted from binlog split
-                // might be out-of-order in terms of same primary key with snapshot splits.
+                // 必须等初始 snapshot 全部结束后再分配 binlog split，
+                // 否则同一主键的数据可能出现 snapshot 与 binlog 的乱序。
                 isBinlogSplitAssigned = true;
                 return Optional.of(createBinlogSplit());
             } else if (AssignerStatus.isNewlyAddedAssigningFinished(
                     snapshotSplitAssigner.getAssignerStatus())) {
-                // do not need to create binlog, but send event to wake up the binlog reader
+                // 新增表流程完成时不创建新的 binlog split，只通过状态变化唤醒 binlog reader。
                 isBinlogSplitAssigned = true;
                 return Optional.empty();
             } else {
-                // binlog split is not ready by now
+                // 还没到可以分配 binlog split 的时机。
                 return Optional.empty();
             }
         } else {
-            // snapshot assigner still have remaining splits, assign split from it
+            // snapshot split 还有剩余，继续从 snapshot 分配器取下一个 split。
             return snapshotSplitAssigner.getNext();
         }
     }
@@ -161,7 +166,7 @@ public class MySqlHybridSplitAssigner implements MySqlSplitAssigner {
             if (split.isSnapshotSplit()) {
                 snapshotSplits.add(split);
             } else {
-                // we don't store the split, but will re-create binlog split later
+                // 不缓存 binlog split，后续会根据最新 snapshot 完成信息重新构建。
                 isBinlogSplitAssigned = false;
             }
         }
@@ -206,6 +211,17 @@ public class MySqlHybridSplitAssigner implements MySqlSplitAssigner {
 
     // --------------------------------------------------------------------------------------------
 
+    /**
+     * 基于所有已分配且已完成的 snapshot split 构建一个 binlog split。
+     *
+     * <p>会计算：
+     *
+     * <ul>
+     *   <li>起始位点：所有 finished offset 的最小值；</li>
+     *   <li>停止位点：snapshot-only 模式下取最大 finished offset，否则不停止；</li>
+     *   <li>finished snapshot 元信息：供 reader 做去重与顺序衔接。</li>
+     * </ul>
+     */
     private MySqlBinlogSplit createBinlogSplit() {
         final List<MySqlSchemalessSnapshotSplit> assignedSnapshotSplit =
                 snapshotSplitAssigner.getAssignedSplits().values().stream()
@@ -219,7 +235,7 @@ public class MySqlHybridSplitAssigner implements MySqlSplitAssigner {
         BinlogOffset minBinlogOffset = null;
         BinlogOffset maxBinlogOffset = null;
         for (MySqlSchemalessSnapshotSplit split : assignedSnapshotSplit) {
-            // find the min and max binlog offset
+            // 计算所有 snapshot split 完成位点中的最小值和最大值。
             BinlogOffset binlogOffset = splitFinishedOffsets.get(split.splitId());
             if (minBinlogOffset == null || binlogOffset.isBefore(minBinlogOffset)) {
                 minBinlogOffset = binlogOffset;
@@ -237,16 +253,13 @@ public class MySqlHybridSplitAssigner implements MySqlSplitAssigner {
                             binlogOffset));
         }
 
-        // If the source is running in snapshot mode, we use the highest watermark among
-        // snapshot splits as the ending offset to provide a consistent snapshot view at the moment
-        // of high watermark.
+        // snapshot-only 模式下，结束位点取最大 watermark，保证在同一快照时刻收敛。
         BinlogOffset stoppingOffset = BinlogOffset.ofNonStopping();
         if (sourceConfig.getStartupOptions().isSnapshotOnly()) {
             stoppingOffset = maxBinlogOffset;
         }
 
-        // the finishedSnapshotSplitInfos is too large for transmission, divide it to groups and
-        // then transfer them
+        // 元信息过大时不直接内嵌，改为后续分组下发，降低单次传输负载。
         boolean divideMetaToGroups = finishedSnapshotSplitInfos.size() > splitMetaGroupSize;
         return new MySqlBinlogSplit(
                 BINLOG_SPLIT_ID,

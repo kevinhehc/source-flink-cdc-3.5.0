@@ -32,13 +32,11 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * A structure describes a fine grained offset in a binlog event including binlog position and gtid
- * set etc.
+ * 描述 binlog 细粒度位点的数据结构，包含文件名/位置、GTID、事务内事件与行偏移等信息。
  *
- * <p>This structure can also be used to deal the binlog event in transaction, a transaction may
- * contain multiple change events, and each change event may contain multiple rows. When restart
- * from a specific {@link BinlogOffset}, we need to skip the processed change events and the
- * processed rows.
+ * <p>该结构不仅用于定位到某个 binlog 位置，也用于事务内精确恢复：一个事务可能包含多个 change
+ * event，而一个 change event 可能对应多行数据。任务从指定 {@link BinlogOffset} 恢复时，需要跳过
+ * 已处理的 event 和 row。
  */
 @PublicEvolving
 public class BinlogOffset implements Comparable<BinlogOffset>, Serializable {
@@ -58,32 +56,32 @@ public class BinlogOffset implements Comparable<BinlogOffset>, Serializable {
 
     // ------------------------------- Builders --------------------------------
 
-    /** Create a {@link BinlogOffsetBuilder}. */
+    /** 创建 {@link BinlogOffsetBuilder}。 */
     public static BinlogOffsetBuilder builder() {
         return new BinlogOffsetBuilder();
     }
 
-    /** Create offset from binlog filename and position. */
+    /** 通过 binlog 文件名和 position 创建位点。 */
     public static BinlogOffset ofBinlogFilePosition(String filename, long position) {
         return builder().setBinlogFilePosition(filename, position).build();
     }
 
-    /** Create offset from GTID set. */
+    /** 通过 GTID 集创建位点。 */
     public static BinlogOffset ofGtidSet(String gtidSet) {
         return builder().setBinlogFilePosition("", 0).setGtidSet(gtidSet).build();
     }
 
-    /** Create offset which represents the earliest accessible binlog offset. */
+    /** 创建“最早可访问位点”。 */
     public static BinlogOffset ofEarliest() {
         return builder().setOffsetKind(BinlogOffsetKind.EARLIEST).build();
     }
 
-    /** Create offset which represents the latest offset at the point of access. */
+    /** 创建“当前最新位点”（调用当下的最新位置）。 */
     public static BinlogOffset ofLatest() {
         return builder().setOffsetKind(BinlogOffsetKind.LATEST).build();
     }
 
-    /** Create offset specified by a timestamp in second. */
+    /** 通过秒级时间戳创建位点。 */
     public static BinlogOffset ofTimestampSec(long timestampSec) {
         return builder()
                 .setOffsetKind(BinlogOffsetKind.TIMESTAMP)
@@ -101,7 +99,7 @@ public class BinlogOffset implements Comparable<BinlogOffset>, Serializable {
         this.offset = offset;
     }
 
-    // ------------------------------ Field getters -----------------------------
+    // ------------------------------ 字段读取 -----------------------------
 
     public Map<String, String> getOffset() {
         return offset;
@@ -163,14 +161,15 @@ public class BinlogOffset implements Comparable<BinlogOffset>, Serializable {
         }
     }
 
-    // ---------------------- Comparing BinlogOffset ----------------------
+    // ---------------------- BinlogOffset 比较规则 ----------------------
 
     /**
-     * This method is inspired by {@link io.debezium.relational.history.HistoryRecordComparator}.
+     * 比较逻辑参考了
+     * {@link io.debezium.relational.history.HistoryRecordComparator}。
      */
     @Override
     public int compareTo(BinlogOffset that) {
-        // the NON_STOPPING is the max offset
+        // NON_STOPPING 视为“最大位点”。
         if (that.getOffsetKind() == BinlogOffsetKind.NON_STOPPING
                 && this.getOffsetKind() == BinlogOffsetKind.NON_STOPPING) {
             return 0;
@@ -185,51 +184,33 @@ public class BinlogOffset implements Comparable<BinlogOffset>, Serializable {
         String gtidSetStr = this.getGtidSet();
         String targetGtidSetStr = that.getGtidSet();
         if (StringUtils.isNotEmpty(targetGtidSetStr)) {
-            // The target offset uses GTIDs, so we ideally compare using GTIDs ...
+            // 目标位点使用 GTID，优先按 GTID 语义比较。
             if (StringUtils.isNotEmpty(gtidSetStr)) {
-                // Both have GTIDs, so base the comparison entirely on the GTID sets.
+                // 双方都有 GTID，直接比较 GTID 集关系。
                 GtidSet gtidSet = new GtidSet(gtidSetStr);
                 GtidSet targetGtidSet = new GtidSet(targetGtidSetStr);
                 if (gtidSet.equals(targetGtidSet)) {
+                    // GTID 完全相同，再用事务内 event 跳过数决定先后。
                     long restartSkipEvents = this.getRestartSkipEvents();
                     long targetRestartSkipEvents = that.getRestartSkipEvents();
                     return Long.compare(restartSkipEvents, targetRestartSkipEvents);
                 }
-                // The GTIDs are not an exact match, so figure out if this is a subset of the target
-                // offset
-                // ...
+                // GTID 不完全相等时，按“是否为对方子集”判断先后。
                 return gtidSet.isContainedWithin(targetGtidSet) ? -1 : 1;
             }
-            // The target offset did use GTIDs while this did not use GTIDs. So, we assume
-            // that this offset is older since GTIDs are often enabled but rarely disabled.
-            // And if they are disabled,
-            // it is likely that this offset would not include GTIDs as we would be trying
-            // to read the binlog of a
-            // server that no longer has GTIDs. And if they are enabled, disabled, and re-enabled,
-            // per
-            // https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-failover.html all properly
-            // configured slaves that
-            // use GTIDs should always have the complete set of GTIDs copied from the master, in
-            // which case
-            // again we know that this offset not having GTIDs is before the target offset ...
+            // 目标有 GTID、当前无 GTID：按“当前更早”处理（与 Debezium 语义保持一致）。
             return -1;
         } else if (StringUtils.isNotEmpty(gtidSetStr)) {
-            // This offset has a GTID but the target offset does not, so per the previous paragraph
-            // we
-            // assume that previous
-            // is not at or before ...
+            // 当前有 GTID、目标无 GTID：按“当前更晚”处理。
             return 1;
         }
 
-        // Both offsets are missing GTIDs. Look at the servers ...
+        // 双方都没有 GTID，则继续比较 serverId / 时间戳 / 文件位点。
         long serverId = this.getServerId();
         long targetServerId = that.getServerId();
 
         if (serverId != targetServerId) {
-            // These are from different servers, and their binlog coordinates are not related. So
-            // the only thing we can do
-            // is compare timestamps, and we have to assume that the server timestamps can be
-            // compared ...
+            // 来自不同 serverId 时，binlog 坐标不可直接比较，退化为时间戳比较。
             long timestamp = this.getTimestampSec();
             long targetTimestamp = that.getTimestampSec();
             if (timestamp != 0 && targetTimestamp != 0) {
@@ -237,24 +218,24 @@ public class BinlogOffset implements Comparable<BinlogOffset>, Serializable {
             }
         }
 
-        // First compare the MySQL binlog filenames
+        // 先比较 binlog 文件名。
         if (this.getFilename() != null
                 && that.getFilename() != null
                 && this.getFilename().compareToIgnoreCase(that.getFilename()) != 0) {
             return this.getFilename().compareToIgnoreCase(that.getFilename());
         }
 
-        // The filenames are the same, so compare the positions
+        // 文件名相同，再比较 position。
         if (this.getPosition() != that.getPosition()) {
             return Long.compare(this.getPosition(), that.getPosition());
         }
 
-        // The positions are the same, so compare the completed events in the transaction ...
+        // position 相同，再比较事务内已处理 event 数。
         if (this.getRestartSkipEvents() != that.getRestartSkipEvents()) {
             return Long.compare(this.getRestartSkipEvents(), that.getRestartSkipEvents());
         }
 
-        // The completed events are the same, so compare the row number ...
+        // event 数也相同，最后比较行偏移。
         return Long.compare(this.getRestartSkipRows(), that.getRestartSkipRows());
     }
 

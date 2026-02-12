@@ -27,8 +27,9 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * A kind of {@link MySqlSnapshotSplit} without table schema information, it is useful to reduce
- * memory usage in JobManager.
+ * 不携带表 schema 信息的 {@link MySqlSnapshotSplit} 变体。
+ *
+ * <p>该类型用于降低 JobManager 侧的内存占用。
  */
 public class MySqlSchemalessSnapshotSplit extends MySqlSnapshotSplit {
 
@@ -50,8 +51,8 @@ public class MySqlSchemalessSnapshotSplit extends MySqlSnapshotSplit {
     }
 
     /**
-     * Converts current {@link MySqlSchemalessSnapshotSplit} to {@link MySqlSnapshotSplit} with
-     * given table schema information.
+     * 将当前 {@link MySqlSchemalessSnapshotSplit} 转换为携带指定 schema 的
+     * {@link MySqlSnapshotSplit}。
      */
     public final MySqlSnapshotSplit toMySqlSnapshotSplit(TableChange tableSchema) {
         Map<TableId, TableChange> tableSchemas = new HashMap<>();
