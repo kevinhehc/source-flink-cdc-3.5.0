@@ -103,6 +103,7 @@ public class MySqlSourceOptions {
     public static final ConfigOption<Integer> SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE =
             ConfigOptions.key("scan.incremental.snapshot.chunk.size")
                     .intType()
+                    // 快照默认按 8096行做一次切割
                     .defaultValue(8096)
                     .withDescription(
                             "The chunk size (number of rows) of table snapshot, captured tables are split into multiple chunks when read the snapshot of table.");

@@ -393,19 +393,49 @@ public class MySqlChunkSplitter implements ChunkSplitter {
      * dynamicChunkSize. If the split column is not evenly distributed, return -1.
      */
     private int getDynamicChunkSize(
-            TableId tableId,
-            Column splitColumn,
-            Object min,
+            TableId tableId, // 表标识，只用于计算/日志。
+            Column splitColumn, // 切分列（通常是主键或可用于范围扫描的列）。
+            Object min, // 该列的最小/最大边界（用于估算范围跨度）。
             Object max,
-            int chunkSize,
-            long approximateRowCnt) {
+            int chunkSize, // 配置的“目标 chunk 行数”（或期望 chunkSize）。
+            long approximateRowCnt) { // 表的近似行数（用于估算密度/分布）。
+
+        // 只有某些类型的列才适合做“均匀分布”假设（例如数值型、连续增长的整型等）。
+        // 不满足条件直接返回 -1：不做动态 chunkSize。
+        // 这里 treatTinyInt1AsBoolean 的存在是因为 MySQL 的 TINYINT(1) 常被当布尔值用；如果当布尔处理，它的取值域太小（0/1），
+        // 显然不适合用范围均匀假设去切 chunk。
         if (!isEvenlySplitColumn(splitColumn, sourceConfig.isTreatTinyInt1AsBoolean())) {
             return -1;
         }
+
+        // 从配置里拿“均匀分布判定阈值”
+        // 允许的“分布因子”范围 [lower, upper]。
+        // 只要实际计算出的分布因子落在这个区间内，就认为“足够均匀”。
+        //
+        // 这是一种经验阈值：太稀疏/太密集/跨度不匹配都算“不均匀”，不要自适应。
         final double distributionFactorUpper = sourceConfig.getDistributionFactorUpper();
         final double distributionFactorLower = sourceConfig.getDistributionFactorLower();
+
+        // 计算实际分布因子（核心指标）
+        // 它在衡量什么？
+        //通常这种 “distribution factor” 会反映：
+        //	•	值域跨度（max-min）相对行数是否合理（密度）
+        //	•	或者“每单位 key 大概有多少行/有多稀疏”的比例
+        //
+        //直觉上：
+        //	•	如果 max-min 很大但行数不多 → 数据很稀疏 → 用固定 chunkSize 按 key 步长切会导致 chunk 里行数很少甚至空洞多
+        //	•	如果 max-min 很小但行数很大 → key 很集中 → 可能一个很小 key 区间就塞满大量行
+        //
+        //因此要先算个指标，判断“用 key 范围来近似行数”是否靠谱。
         double distributionFactor =
                 calculateDistributionFactor(tableId, min, max, approximateRowCnt);
+
+        // 判断是否均匀
+        // doubleCompare 是为了规避浮点比较误差。
+        //	•	在 [lower, upper] 里：认为均匀
+        //	•	不在：认为不均匀
+        //
+        // 并记录日志，方便你在运行时看到实际 distributionFactor 和阈值，辅助调参。
         boolean dataIsEvenlyDistributed =
                 ObjectUtils.doubleCompare(distributionFactor, distributionFactorLower) >= 0
                         && ObjectUtils.doubleCompare(distributionFactor, distributionFactorUpper)
@@ -416,6 +446,16 @@ public class MySqlChunkSplitter implements ChunkSplitter {
                 distributionFactor,
                 distributionFactorLower,
                 distributionFactorUpper);
+        // 如果均匀：返回动态 chunkSize（并保证最小为 1）
+        // 返回值的含义
+        //	•	返回 dynamicChunkSize = max(int(distributionFactor * chunkSize), 1)
+        //
+        //它把 distributionFactor 当成一个缩放因子，用来修正 chunkSize：
+        //	•	如果 distributionFactor < 1：dynamicChunkSize 可能比 chunkSize 小 → 切得更细（更小步长）
+        //	•	如果 distributionFactor > 1：dynamicChunkSize 可能比 chunkSize 大 → 切得更粗（更大步长）
+        //
+        //这通常用于 把“按 key 步长切分”转化成“尽量每个 split 有 chunkSize 行” 的自适应近似：
+        //当数据“均匀”时，这种比例估算是可信的；当不均匀时，会导致严重的 split 倾斜，因此直接 -1 回退。
         if (dataIsEvenlyDistributed) {
             // 最小步长至少为 1，避免在稀疏数据上出现步长为 0 的死循环。
             return Math.max((int) (distributionFactor * chunkSize), 1);
