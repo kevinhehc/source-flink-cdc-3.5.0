@@ -179,6 +179,7 @@ public class SnapshotSplitReader implements DebeziumReader<SourceRecords, MySqlS
                 statefulTaskContext.getOffsetContext());
     }
 
+    // chunk读取期间的变更在Binlog内的数据回填到chunk里面
     private void backfill(
             SnapshotResult<MySqlOffsetContext> snapshotResult,
             SnapshotSplitChangeEventSourceContextImpl sourceContext)

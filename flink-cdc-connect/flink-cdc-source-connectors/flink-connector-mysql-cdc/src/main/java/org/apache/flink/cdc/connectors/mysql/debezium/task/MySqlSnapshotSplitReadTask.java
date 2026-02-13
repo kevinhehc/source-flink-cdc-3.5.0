@@ -153,6 +153,7 @@ public class MySqlSnapshotSplitReadTask
         if (hooks.getPreLowWatermarkAction() != null) {
             hooks.getPreLowWatermarkAction().accept(jdbcConnection, snapshotSplit);
         }
+        // 开始读的时候的binlog的binlog_offset
         final BinlogOffset lowWatermark = DebeziumUtils.currentBinlogOffset(jdbcConnection);
         LOG.info(
                 "Snapshot step 1 - Determining low watermark {} for split {}",
@@ -186,6 +187,7 @@ public class MySqlSnapshotSplitReadTask
             highWatermark = lowWatermark;
         } else {
             // Get the current binlog offset as HW
+            // 高水位的记录
             highWatermark = DebeziumUtils.currentBinlogOffset(jdbcConnection);
         }
 
