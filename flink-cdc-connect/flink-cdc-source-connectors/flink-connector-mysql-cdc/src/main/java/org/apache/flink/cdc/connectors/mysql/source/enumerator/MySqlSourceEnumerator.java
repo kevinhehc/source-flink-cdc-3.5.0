@@ -60,10 +60,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.flink.cdc.connectors.mysql.source.assigners.AssignerStatus.isNewlyAddedAssigningSnapshotFinished;
 
-/**
- * A MySQL CDC source enumerator that enumerates receive the split request and assign the split to
- * source readers.
- */
+/** MySQL CDC Source 的枚举器：接收 split 请求并将 split 分配给各 SourceReader。 */
 @Internal
 public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, PendingSplitsState> {
     private static final Logger LOG = LoggerFactory.getLogger(MySqlSourceEnumerator.class);
@@ -75,7 +72,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
 
     private final Boundedness boundedness;
 
-    // using TreeSet to prefer assigning binlog split to task-0 for easier debug
+    // 使用 TreeSet 保证更稳定的分配顺序，便于优先将 binlog split 分给 task-0 调试。
     private final TreeSet<Integer> readersAwaitingSplit;
     private List<List<FinishedSnapshotSplitInfo>> binlogSplitMeta;
 
@@ -131,8 +128,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
 
     @Override
     public void addReader(int subtaskId) {
-        // send BinlogSplitUpdateRequestEvent to source reader after newly added table
-        // snapshot splits finished.
+        // 新增表的 snapshot split 完成后，通知 reader 更新其 binlog split。
         if (isNewlyAddedAssigningSnapshotFinished(splitAssigner.getAssignerStatus())) {
             context.sendEventToSourceReader(subtaskId, new BinlogSplitUpdateRequestEvent());
         }
@@ -205,15 +201,14 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
 
         while (awaitingReader.hasNext()) {
             int nextAwaiting = awaitingReader.next();
-            // if the reader that requested another split has failed in the meantime, remove
-            // it from the list of waiting readers
+            // 请求 split 的 reader 若期间失败，则从等待队列移除。
             if (!context.registeredReaders().containsKey(nextAwaiting)) {
                 awaitingReader.remove();
                 continue;
             }
 
             if (shouldCloseIdleReader(nextAwaiting)) {
-                // close idle readers when snapshot phase finished.
+                // snapshot 阶段完成后可关闭空闲 reader。
                 context.signalNoMoreSplits(nextAwaiting);
                 awaitingReader.remove();
                 LOG.info("Close idle reader of subtask {}", nextAwaiting);
@@ -230,7 +225,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
                 awaitingReader.remove();
                 LOG.info("The enumerator assigns split {} to subtask {}", mySqlSplit, nextAwaiting);
             } else {
-                // there is no available splits by now, skip assigning
+                // 当前没有可分配 split，先跳过并等待后续状态推进。
                 requestBinlogSplitUpdateIfNeed();
                 break;
             }
@@ -238,12 +233,9 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
     }
 
     private boolean shouldCloseIdleReader(int nextAwaiting) {
-        // When no unassigned split anymore, Signal NoMoreSplitsEvent to awaiting reader in two
-        // situations:
-        // 1. When Set StartupMode = snapshot mode(also bounded), there's no more splits in the
-        // assigner.
-        // 2. When set scan.incremental.close-idle-reader.enabled = true, there's no more splits in
-        // the assigner.
+        // 当没有待分配 split 时，在以下两种场景给等待中的 reader 发送 NoMoreSplitsEvent：
+        // 1. StartupMode = snapshot（有界），assigner 已无剩余 split。
+        // 2. 启用 scan.incremental.close-idle-reader.enabled 且 assigner 已无剩余 split。
         return splitAssigner.noMoreSplits()
                 && (boundedness == Boundedness.BOUNDED
                         || (sourceConfig.isCloseIdleReaders()
@@ -261,9 +253,8 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
         if (t != null) {
             throw new FlinkRuntimeException("Failed to list obtain registered readers due to:", t);
         }
-        // when the SourceEnumerator restores or the communication failed between
-        // SourceEnumerator and SourceReader, it may missed some notification event.
-        // tell all SourceReader(s) to report there finished but unacked splits.
+        // SourceEnumerator 恢复后或与 SourceReader 通信异常时，可能丢失通知事件。
+        // 因此主动要求所有 SourceReader 上报“已完成但尚未 ack”的 splits。
         if (splitAssigner.waitingForFinishedSplits()) {
             for (int subtaskId : subtaskIds) {
                 context.sendEventToSourceReader(
@@ -288,7 +279,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
     }
 
     private void sendBinlogMeta(int subTask, BinlogSplitMetaRequestEvent requestEvent) {
-        // initialize once
+        // 懒加载初始化，仅首次请求时构建元数据分组。
         if (binlogSplitMeta == null) {
             final List<FinishedSnapshotSplitInfo> finishedSnapshotSplitInfos =
                     splitAssigner.getFinishedSplitInfos();
