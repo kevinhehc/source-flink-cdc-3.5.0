@@ -74,6 +74,20 @@ import static org.apache.flink.cdc.connectors.mysql.debezium.DebeziumUtils.creat
  * A snapshot reader that reads data from Table in split level, the split is assigned by primary key
  * range.
  */
+// 如何保证读取期间chunk的变化回填的流程
+// LW/HW 产生：MySqlSnapshotSplitReadTask#doExecute 两次 DebeziumUtils.currentBinlogOffset，
+// 并通过 SignalEventDispatcher#dispatchWatermarkEvent 注入队列（LOW/HIGH 信号事件） ￼
+
+//	1	snapshot split 内回填合并按 key-range 过滤：SnapshotSplitReader#pollWithBuffer →
+//      	RecordUtils.upsertBinlog(... splitStart/splitEnd ...) ￼
+
+//	2	HW 固化并回传 enumerator：MySqlRecordEmitter#processElement 写入 MySqlSnapshotSplitState.highWatermark →
+//          	MySqlSourceReader#reportFinishedSnapshotSplitsIfNeed 上报 → MySqlSourceEnumerator#handleSourceEvent
+//          	转给 MySqlSnapshotSplitAssigner#onFinishedSplits 落到 splitFinishedOffsets
+//          	￼
+//	3	binlog 阶段按 key-range + HW 过滤：MySqlHybridSplitAssigner#createBinlogSplit 把
+//          	FinishedSnapshotSplitInfo(range + HW) 塞进 binlog split →
+//          	BinlogSplitReader#shouldEmit 用 (key-range 命中) && (position > split.HW) 放行，否则丢弃
 public class SnapshotSplitReader implements DebeziumReader<SourceRecords, MySqlSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(SnapshotSplitReader.class);
@@ -310,6 +324,7 @@ public class SnapshotSplitReader implements DebeziumReader<SourceRecords, MySqlS
         return Collections.singletonList(new SourceRecords(records)).iterator();
     }
 
+    // snapshot split 内回填合并按 key-range 过滤
     public Iterator<SourceRecords> pollWithBuffer() throws InterruptedException {
         // data input: [low watermark event][snapshot events][high watermark event][binlog
         // events][binlog-end event]
@@ -355,6 +370,7 @@ public class SnapshotSplitReader implements DebeziumReader<SourceRecords, MySqlS
                         records.add(record);
                     }
                 } else {
+                    // 在进入 binlog 回填阶段后，对每条 binlog record 调用
                     RecordUtils.upsertBinlog(
                             snapshotRecords,
                             record,

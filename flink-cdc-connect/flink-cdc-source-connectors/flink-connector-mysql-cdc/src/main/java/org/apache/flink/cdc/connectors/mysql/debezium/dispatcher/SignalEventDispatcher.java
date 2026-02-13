@@ -34,7 +34,7 @@ import java.util.Map;
  * A dispatcher to dispatch watermark signal events.
  *
  * <p>The watermark signal event is used to describe the start point and end point of a split scan.
- * The Watermark Signal Algorithm is inspired by https://arxiv.org/pdf/2010.12597v1.pdf.
+ * The Watermark Signal Algorithm is inspired by <a href="https://arxiv.org/pdf/2010.12597v1.pdf">link</a>.
  */
 public class SignalEventDispatcher {
 
