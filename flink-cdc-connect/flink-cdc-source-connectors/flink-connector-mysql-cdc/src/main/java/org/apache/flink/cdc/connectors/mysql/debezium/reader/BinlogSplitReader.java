@@ -71,7 +71,68 @@ import static org.apache.flink.cdc.connectors.mysql.source.utils.RecordUtils.isE
  *
  * <p>负责读取 binlog，并过滤掉与 {@link SnapshotSplitReader} 已读取快照范围重叠的数据。
  */
+// 数据变更 不在当前 chunk 范围内的三种情况
+
+// A. 新增行落在某个未来 chunk 的 key-range 内（该 chunk 还没 snapshot）
+//例如：chunk 划分有 [0,10000), [10000,20000)，你正在读第一个 chunk 的时候插入了 id=15000。
+//为什么不会丢？
+//	•	在 binlog 阶段的过滤逻辑里：如果该表还没进入 pure binlog phase，并且事件不属于“已完成 snapshot split 且 offset>其HW”，
+//	就 return false 不下发。源码里最后明确写着：// not in the monitored splits scope, do not emit return false。 ￼
+//	•	也就是说：对还没完成 snapshot 的 chunk，其范围内的 binlog 事件不会提前发出来。
+//	•	等到 [10000,20000) 这个 chunk 开始做 snapshot 时，id=15000 已经在表里了，会被这个 chunk 的 snapshot SQL 直接读出来。
+//所以你不会丢数据，反而是有意避免“binlog 先发，snapshot 后发”造成同主键乱序
+// （Hybrid Assigner 里也明确说了要等 snapshot assigner finished，否则会 out-of-order）。
+
+
+// ￼B. 新增行落在已经完成 snapshot 的 chunk key-range 内（该 chunk 已经 snapshot 完）
+//例如：你已经完成了 [0,10000) 的 chunk snapshot，之后插入了 id=5000。
+//为什么不会丢？
+//binlog reader 的 shouldEmit 对这类事件要求同时满足两条件（源码里写得一清二楚）：
+//	1.	splitKeyRangeContains(chunkKey, splitStart, splitEnd) —— 事件的主键落在该 split 的 key-range 内
+//	2.	position.isAfter(splitInfo.getHighWatermark()) —— 事件 offset 必须在该 split 的 HW 之后
+//两者同时满足才 return true 放行。 ￼
+//这正好保证了：
+//	•	snapshot 期间（LOW~HIGH 区间内）属于该 chunk 的变更，会在“对齐/回填”窗口里被正确处理（避免重复/冲突）
+//	•	snapshot 完成之后的新变更，会以 binlog 形式正常输出
+
+
+// C. 新增行的主键超出了当初切 chunk 时看到的最大值（不在任何 chunk 分配范围内）
+//这是你问题里最尖锐的那种：“我切分时 maxId=1,000,000，snapshot 过程中插入了 id=2,000,000，当初根本没分到任何 chunk 里，那怎么办？”
+//这类数据也不会丢，靠的是 pure binlog phase：
+//	•	BinlogSplitReader#hasEnterPureBinlogPhase(tableId, position)：当 binlog position 超过该表的 maxSplitHighWatermark
+//  	（也就是全表 snapshot splits 的最大 HW）时，标记该表进入 pureBinlogPhaseTables，之后对该表事件直接 return true。 ￼
+//	•	进入 pure binlog phase 之前：如果事件不属于已完成 splits 的 key-range，shouldEmit 会挡掉（return false）。 ￼
+//	•	进入 pure binlog phase 之后：该表所有 row mutation 事件都放行（不再需要 key-range 过滤），
+//   	因此像 id=2,000,000 这种“当初没覆盖到的 key-range”插入会在此时被捕获并输出。 ￼
+//这里的关键是：maxSplitHighWatermarkMap 是在 configureFilter() 里由 FinishedSnapshotSplitInfo 聚合出来的，
+// 也就是 Hybrid 创建 binlog split 时塞进去的每个 split 的 HW 列表。
+
+
 public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSplit> {
+// 用时间线把三类情况串起来（最直观）
+//
+//假设 chunk 划分按 id：
+//	•	split0: [0,10000)，HW0
+//	•	split1: [10000,20000)，HW1
+//	•	……
+//	•	splitN: [990000,1000000]，HWN
+//	•	maxHW = max(HW0..HWN)
+//
+//binlog reader 的输出策略是：
+//	1.	position ≤ maxHW：过滤阶段
+//	•	只输出：落在某个“已完成 split 的范围”内 且 offset > 该 split.HW 的事件  ￼
+//	•	不输出：未来 split 范围内的事件（避免提前发导致乱序/重复） ￼
+//	•	不输出：超出所有 split 范围的事件（因为没法归属任何 split 做对齐） ￼
+//	2.	position > maxHW：pure binlog phase
+//	•	对该表事件全部输出（不再需要按 split 范围过滤） ￼
+//
+//因此：
+//	•	未来 chunk 范围内的新增行：会被后续 snapshot chunk 读到（binlog 先不发）
+//	•	已完成 chunk 范围内的新增/更新：在 offset > 该 chunk.HW 后由 binlog 发出
+//	•	超出初始范围的新增行：在进入 pure binlog phase 后由 binlog 发出
+//
+//三条合起来就实现了“不丢”。
+
 
     private static final Logger LOG = LoggerFactory.getLogger(BinlogSplitReader.class);
     private final StatefulTaskContext statefulTaskContext;
@@ -255,12 +316,14 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
      * </pre>
      */
     private boolean shouldEmit(SourceRecord sourceRecord) {
+        // 如果是数据变更
         if (RecordUtils.isDataChangeRecord(sourceRecord)) {
             TableId tableId = RecordUtils.getTableId(sourceRecord);
             if (pureBinlogPhaseTables.contains(tableId)) {
                 return true;
             }
             BinlogOffset position = RecordUtils.getBinlogPosition(sourceRecord);
+            // 如果是纯binlog的阶段(snapshot的同步已经处理完了)
             if (hasEnterPureBinlogPhase(tableId, position)) {
                 return true;
             }
