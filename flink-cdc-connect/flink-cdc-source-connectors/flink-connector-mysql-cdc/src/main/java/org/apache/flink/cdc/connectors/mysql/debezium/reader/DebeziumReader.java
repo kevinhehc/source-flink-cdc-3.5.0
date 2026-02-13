@@ -21,25 +21,26 @@ import javax.annotation.Nullable;
 
 import java.util.Iterator;
 
-/** Reader to read split of table, the split is either snapshot split or binlog split. */
+/** 读取表 split 的 Reader，split 可以是 snapshot split 或 binlog split。 */
 public interface DebeziumReader<T, Split> {
 
-    /** Return the current split of the reader is finished or not. */
+    /** 返回当前 split 是否读取完成。 */
     boolean isFinished();
 
     /**
-     * Add to split to read, this should call only the when reader is idle.
+     * 提交一个待读取的 split，仅应在 reader 空闲时调用。
      *
-     * @param splitToRead
+     * @param splitToRead 待读取 split
      */
     void submitSplit(Split splitToRead);
 
-    /** Close the reader and releases all resources. */
+    /** 关闭 reader 并释放所有资源。 */
     void close();
 
     /**
-     * Reads records from MySQL. The method should return null when reaching the end of the split,
-     * the empty {@link Iterator} will be returned if the data of split is on pulling.
+     * 从 MySQL 拉取记录。
+     *
+     * <p>到达 split 末尾时返回 null；若当前正在拉取、暂时没有可返回数据，则返回空的 {@link Iterator}。
      */
     @Nullable
     Iterator<T> pollSplitRecords() throws InterruptedException;
