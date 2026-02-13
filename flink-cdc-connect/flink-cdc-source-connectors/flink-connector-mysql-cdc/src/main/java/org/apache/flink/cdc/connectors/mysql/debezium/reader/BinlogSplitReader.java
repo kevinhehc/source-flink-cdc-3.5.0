@@ -315,6 +315,41 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
      *  only the binlog event belong to [1024, 2048) and offset is after highWatermark1 should send.
      * </pre>
      */
+    // 机制 1：在进入“纯 binlog”之前，binlog reader 只放行满足条件的事件
+    // 核心判定是：
+    //	•	必须命中某个已完成 snapshot split 的 key-range
+    //	•	并且 position 必须大于该 split 的 high watermark（HW）
+    //也就是说，即使 BinlogSplit 从 minHW 开始读，它读到的很多事件会被过滤掉，只有“该 split 快照之后”的事件才会 emit。
+    //
+    //结论：同一条 binlog event 不会被 emit 两次，因为：
+    //	•	LOW~HIGH 窗口内的变更要么被 snapshot split 内部合并进快照结果（不 emit），
+    //      	要么在 binlog 阶段因为 position <= split.HW 被过滤掉（不 emit）。
+    //	•	真正会 emit 的，是 position > split.HW 的那部分。
+
+    // 机制 2：对于“不在任何 chunk key-range 内”的新增行（例如主键超出初始 max），会延后到 pure binlog phase 再放行
+    //你提到的“新增数据不在 chunk 的范围内”，最典型是：
+    //	•	切 chunk 时看到 id max = 1,000,000
+    //	•	snapshot 期间插入 id=2,000,000（超出了当初切分范围）
+    //这种事件在 binlog 过滤阶段确实可能暂时不放行（因为它不属于任何 FinishedSnapshotSplitInfo 的 key-range），但不会丢：
+    //	•	当 binlog position 超过该表的 maxSplitHighWatermark（全表最大 HW） 后，binlog reader 会进入 pure binlog phase，
+    //  	此时对该表事件直接放行（不再要求命中 chunk 范围）。
+    //  这类“超出初始 chunk 范围”的插入，也只会在 pure binlog phase emit 一次，不会重复。
+
+
+    // demo
+    // 假设：
+    //	•	chunk0: [0, 10000)，HW0=100
+    //	•	chunk1: [10000, 20000)，HW1=130
+    //	•	minHW=100
+    //
+    //情况：在读 chunk0 时插入 id=15000（属于 chunk1）
+    //	1.	chunk0 快照阶段：这条 insert 的 binlog 记录存在，但 全局 BinlogSplit 还没开始；chunk0 的内部 backfill
+    //      	也只会合并“属于 chunk0 key-range”的记录，id=15000 不会被合并/发出。
+    //	2.	后面 chunk1 快照阶段：id=15000 已经落库，会被 chunk1 的 snapshot SQL 直接读出（作为快照行输出）。
+    //	3.	BinlogSplit 开始，从 minHW=100 读：
+    //	•	读到 insert(id=15000) 那条 binlog：它的 position 大概率 <= HW1(130)（因为发生在 chunk1 snapshot 之前/期间），
+    //      	即使 key-range 命中 chunk1，也会因为 position <= HW1 被过滤掉，不会 emit。
+    //	4.	之后 id=15000 的后续更新（position > HW1）才会被 emit。
     private boolean shouldEmit(SourceRecord sourceRecord) {
         // 如果是数据变更
         if (RecordUtils.isDataChangeRecord(sourceRecord)) {
