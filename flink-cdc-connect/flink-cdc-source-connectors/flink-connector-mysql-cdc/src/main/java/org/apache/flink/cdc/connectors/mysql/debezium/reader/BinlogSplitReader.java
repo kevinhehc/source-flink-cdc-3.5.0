@@ -67,8 +67,9 @@ import static org.apache.flink.cdc.connectors.mysql.debezium.DebeziumUtils.creat
 import static org.apache.flink.cdc.connectors.mysql.source.utils.RecordUtils.isEndWatermarkEvent;
 
 /**
- * A Debezium binlog reader implementation that also support reads binlog and filter overlapping
- * snapshot data that {@link SnapshotSplitReader} read.
+ * Debezium binlog reader 实现。
+ *
+ * <p>负责读取 binlog，并过滤掉与 {@link SnapshotSplitReader} 已读取快照范围重叠的数据。
  */
 public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSplit> {
 
@@ -83,7 +84,7 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
     private MySqlBinlogSplitReadTask binlogSplitReadTask;
     private MySqlBinlogSplit currentBinlogSplit;
     private Map<TableId, List<FinishedSnapshotSplitInfo>> finishedSplitsInfo;
-    // tableId -> the max splitHighWatermark
+    // tableId -> 该表所有 snapshot split 中最大的 high watermark。
     private Map<TableId, BinlogOffset> maxSplitHighWatermarkMap;
     private final Set<TableId> pureBinlogPhaseTables;
     private Predicate capturedTableFilter;
@@ -228,8 +229,7 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
 
     private Optional<SourceRecord> parseOnLineSchemaChangeEvent(SourceRecord sourceRecord) {
         if (RecordUtils.isOnLineSchemaChangeEvent(sourceRecord)) {
-            // This is a gh-ost initialized schema change event and should be emitted if the
-            // peeled tableId matches the predicate.
+            // 这是 gh-ost 初始化的 schema change 事件，仅当去壳后的 tableId 命中过滤条件时才下发。
             TableId originalTableId = RecordUtils.getTableId(sourceRecord);
             TableId peeledTableId = RecordUtils.peelTableId(originalTableId);
             if (capturedTableFilter.test(peeledTableId)) {
@@ -241,11 +241,10 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
     }
 
     /**
-     * Returns the record should emit or not.
+     * 判断该记录是否应该下发。
      *
-     * <p>The watermark signal algorithm is the binlog split reader only sends the binlog event that
-     * belongs to its finished snapshot splits. For each snapshot split, the binlog event is valid
-     * since the offset is after its high watermark.
+     * <p>水位线过滤算法：binlog split reader 只发送“属于已完成 snapshot split 且位点晚于该 split 的
+     * high watermark”的 binlog 事件。
      *
      * <pre> E.g: the data input is :
      *    snapshot-split-0 info : [0,    1024) highWatermark0
@@ -266,9 +265,9 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
                 return true;
             }
 
-            // only the table who captured snapshot splits need to filter
+            // 只有存在 snapshot split 历史的表需要做区间过滤。
             if (finishedSplitsInfo.containsKey(tableId)) {
-                // if backfill skipped, don't need to filter
+                // 若配置为跳过 backfill，则无需过滤。
                 if (isBackfillSkipped) {
                     return true;
                 }
@@ -290,14 +289,14 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
                     }
                 }
             }
-            // not in the monitored splits scope, do not emit
+            // 不在已监控 split 范围内，不下发。
             return false;
         } else if (RecordUtils.isSchemaChangeEvent(sourceRecord)) {
             if (RecordUtils.isTableChangeRecord(sourceRecord)) {
                 TableId tableId = RecordUtils.getTableId(sourceRecord);
                 return capturedTableFilter.test(tableId);
             } else {
-                // Not related to changes in table structure, like `CREATE/DROP DATABASE`, skip it
+                // 与表结构无关（如 `CREATE/DROP DATABASE`）的事件跳过。
                 return false;
             }
         }
@@ -305,18 +304,17 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
     }
 
     private boolean hasEnterPureBinlogPhase(TableId tableId, BinlogOffset position) {
-        // the existed tables those have finished snapshot reading
+        // 已完成 snapshot 的存量表：位点超过最大 high watermark 后进入纯 binlog 阶段。
         if (maxSplitHighWatermarkMap.containsKey(tableId)
                 && position.isAfter(maxSplitHighWatermarkMap.get(tableId))) {
             pureBinlogPhaseTables.add(tableId);
             return true;
         }
 
-        // Use still need to capture new sharding table if user disable scan new added table,
-        // The history records for all new added tables(including sharding table and normal table)
-        // will be capture after restore from a savepoint if user enable scan new added table
+        // 若关闭“扫描新增表”，仍需捕获新增分片表（无历史 split 记录）的 binlog 事件。
+        // 若开启“扫描新增表”，从 savepoint/checkpoint 恢复后会补齐新增表（含分片表与普通表）的历史记录。
         if (!statefulTaskContext.getSourceConfig().isScanNewlyAddedTableEnabled()) {
-            // the new added sharding table without history records
+            // 无历史 high watermark 且命中过滤条件的新增分片表。
             return !maxSplitHighWatermarkMap.containsKey(tableId)
                     && capturedTableFilter.test(tableId);
         }
@@ -328,13 +326,13 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
                 currentBinlogSplit.getFinishedSnapshotSplitInfos();
         Map<TableId, List<FinishedSnapshotSplitInfo>> splitsInfoMap = new HashMap<>();
         Map<TableId, BinlogOffset> tableIdBinlogPositionMap = new HashMap<>();
-        // startup mode which is stream only
+        // 纯流模式启动：没有 snapshot split，直接以起始位点作为表级基准位点。
         if (finishedSplitInfos.isEmpty()) {
             for (TableId tableId : currentBinlogSplit.getTableSchemas().keySet()) {
                 tableIdBinlogPositionMap.put(tableId, currentBinlogSplit.getStartingOffset());
             }
         }
-        // initial mode
+        // initial 模式：按表聚合 finished snapshot split，并记录每张表最大的 high watermark。
         else {
             for (FinishedSnapshotSplitInfo finishedSplitInfo : finishedSplitInfos) {
                 TableId tableId = finishedSplitInfo.getTableId();
@@ -356,14 +354,11 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
     }
 
     private Predicate<Event> createEventFilter() {
-        // If the startup mode is set as TIMESTAMP, we need to apply a filter on event to drop
-        // events earlier than the specified timestamp.
+        // TIMESTAMP 启动模式下需要过滤事件，丢弃早于指定时间戳的行变更事件。
 
-        // NOTE: Here we take user's configuration (statefulTaskContext.getSourceConfig())
-        // as the ground truth. This might be fragile if user changes the config and recover
-        // the job from savepoint / checkpoint, as there might be conflict between user's config
-        // and the state in savepoint / checkpoint. But as we don't promise compatibility of
-        // checkpoint after changing the config, this is acceptable for now.
+        // 注意：这里以用户当前配置（statefulTaskContext.getSourceConfig()）为准。
+        // 若用户改配置后再从 savepoint/checkpoint 恢复，可能与保存状态产生冲突；
+        // 但当前并不承诺“改配置后 checkpoint 兼容”，因此该行为可接受。
         StartupOptions startupOptions = statefulTaskContext.getSourceConfig().getStartupOptions();
         if (startupOptions.startupMode.equals(StartupMode.TIMESTAMP)) {
             if (startupOptions.binlogOffset == null) {
@@ -373,8 +368,7 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
                                 + "configuration. ");
             }
             long startTimestampSec = startupOptions.binlogOffset.getTimestampSec();
-            // We only skip data change event, as other kinds of events are necessary for updating
-            // some internal state inside MySqlStreamingChangeEventSource
+            // 仅过滤数据变更事件；其他事件仍需保留，以维护 MySqlStreamingChangeEventSource 内部状态。
             LOG.info(
                     "Creating event filter that dropping row mutation events before timestamp in second {}",
                     startTimestampSec);
@@ -390,7 +384,7 @@ public class BinlogSplitReader implements DebeziumReader<SourceRecords, MySqlSpl
 
     public void stopBinlogReadTask() {
         currentTaskRunning = false;
-        // Terminate the while loop in MySqlStreamingChangeEventSource's execute method
+        // 终止 MySqlStreamingChangeEventSource.execute() 内部 while 循环。
         changeEventSourceContext.stopChangeEventSource();
     }
 
